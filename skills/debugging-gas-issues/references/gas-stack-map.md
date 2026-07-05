@@ -13,7 +13,7 @@ The symptom surfaces high in the stack (a `gc` command feels slow, an agent stal
 | go-mysql-server (gms) | `dolthub/go-mysql-server` | The SQL engine embedded in dolt: query planning, index selection, joins, expression eval | a dolt dependency (check dolt's `go.mod`) |
 | vitess | `dolthub/vitess` | MySQL wire protocol + SQL parser used by gms | a gms dependency |
 | driver | `dolthub/driver` | The Go `database/sql` driver gc/bd use to talk to a dolt server | a gc/bd dependency |
-| doltlite | `dolthub/doltlite` (`doltlite-python`) | SQLite-backed version-controlled store — an alternative to dolt; **no mysql sql-server, no port** | the consumer's build cache; an on-disk SQLite file |
+| doltlite | `dolthub/doltlite` + the beads **backend plugin** (`bd-backend-doltlite`) & gc **fastpath** (`gc-doltlite-fastpath`) | SQLite-backed version-controlled store — an alternative to dolt; **no mysql sql-server, no port**. In the *plugin* deployment bd/gc are plain (unlinked) and talk to a `…serve` subprocess over stdio | `.beads/doltlite/*.db`; the co-located plugin binaries (e.g. `~/.local/lib/beads-plugin/`); `.beads/metadata.json` names them |
 
 ## Ground-truth sources (consult before tracing or changing behavior)
 
@@ -43,9 +43,20 @@ git -C <source> log -1 --format='%H %ci %s'   # source HEAD
 # mismatch -> your trace may not reflect the binary; rebuild or check out the right commit
 ```
 
-## dolt vs doltlite (don't assume mysql)
+## Which data plane? — detect the backend FIRST (don't assume mysql)
 
-- **dolt**: a MySQL-protocol `sql-server` on a TCP port. Diagnose with `SHOW PROCESSLIST`, `information_schema.processlist`, global status, `ss`/`lsof` on the port. Port resolution: `--port` flag > city `dolt.port` config > `<rig>/.beads/dolt-server.port` file > legacy default.
-- **doltlite**: a version-controlled **SQLite** file. **No server, no port, no PROCESSLIST.** Diagnose with SQLite tooling against the file (`.dolt`/`.doltlite` dir), file size on disk, and the consuming process's own profiling. The CPU-vs-load, binary-grep, bead-store-layout, and dogfood techniques still apply; the *server* techniques do not. Check which backend the city/store actually uses before reaching for `SHOW PROCESSLIST`.
+A beads store can sit on any of several data-plane backends, and their diagnostics differ completely — so identify the store's backend and **trace to that layer's repo** (the stack table above). `.beads/metadata.json` is the ground truth — read it *before* reaching for `SHOW PROCESSLIST`. The common ones are below; the list isn't closed (others may exist), so key off metadata, not a fixed set:
+
+```bash
+jq -r '.backend, (.backend_plugin_command // "—")' .beads/metadata.json  # backend + plugin cmd (or —)
+ls -d .beads/dolt .beads/doltlite 2>/dev/null                            # which store dir exists
+pgrep -af 'dolt sql-server|bd-backend-doltlite|gc-doltlite-fastpath'     # which serve procs are live
+```
+
+- **dolt (sql-server)** — `backend: dolt`; a MySQL-protocol server on a TCP port, store under `.beads/dolt`. Diagnose with `SHOW PROCESSLIST`, `information_schema.processlist`, global status, `ss`/`lsof` on the port. Port resolution: `--port` > city `dolt.port` > `<rig>/.beads/dolt-server.port` > legacy default.
+- **doltlite, linked** — `backend: doltlite`, **no** `backend_plugin_command`; DoltLite compiled *into* bd/gc. Version-controlled, SQLite-backed; **no server, no port, no PROCESSLIST.**
+- **doltlite, backend-plugin** — `backend: doltlite` **with** `backend_plugin_command` set. bd/gc are plain (unlinked) and launch `bd-backend-doltlite serve` (bd storage, over stdio, per-invocation) + `gc-doltlite-fastpath serve` (gc's always-on read fastpath). Store is `.beads/doltlite/*.db`; the plugin binaries are co-located (metadata names them). **No TCP server** — you cannot `SHOW PROCESSLIST` or `ss` a port. Inspect via `bd sql` (routed through the plugin), the `…serve` processes, the store dir on disk, and the DoltLite SQL maintenance functions. Deep commands + gotchas (`dolt_gc`, flatten, maintenance, locks, native read fastpath) live in the DoltLite contract itself (`dolthub/doltlite` + its README) and the plugin repos (`duncan4123/beads-backend-doltlite`, `duncan4123/gascity`). A city that imports the `beads-doltlite` pack (`gastownhall/gascity` `//examples/beads-doltlite`) also gets its `doltlite` skill as a convenience layer over those.
+
+Detect which backend a given store uses and **trace to that owning layer (and its repo)** — don't assume. On a shared box the backends can coexist **per city** (one city on one backend, a throwaway on another), so detect per store, never assume per host.
 
 See `gc-diagnostic-toolkit.md` for the concrete commands per backend.
