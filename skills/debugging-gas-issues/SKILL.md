@@ -33,7 +33,7 @@ gc        gastownhall/gascity · gastownhall/gastown
      ├─ dolt      dolthub/dolt            (mysql-protocol, sql-server, port-based)
      │   └─ gms   dolthub/go-mysql-server (the SQL engine — planning, indexes)
      │       └─ vitess  dolthub/vitess    (MySQL protocol/parser)
-     ├─ doltlite  dolthub/doltlite        (SQLite-backed — different diagnostics, no sql-server)
+     ├─ doltlite  dolthub/doltlite        (SQLite-backed; linked OR backend-plugin = bd-backend-doltlite + gc-doltlite-fastpath — no sql-server/port)
      └─ driver    dolthub/driver
 ```
 

@@ -40,7 +40,9 @@ pidstat 3 1 | awk '/^Average:/ && $3 ~ /^[0-9]+$/ {cpu[$NF]+=$8} END{for(c in cp
 ```
 Aggregates sustained CPU by command. (`ps` %CPU is lifetime-average — misleading for "now".)
 
-## dolt server introspection
+## dolt server introspection (backend: dolt only — confirm first)
+
+Applies to the **dolt sql-server** backend. On a doltlite backend there is no server/port/PROCESSLIST — skip to the doltlite section. Confirm with `jq -r .backend .beads/metadata.json`.
 
 ```bash
 PORT=$(cat <rig>/.beads/dolt-server.port 2>/dev/null || echo 3307)   # resolution: --port > city dolt.port > port-file > legacy
@@ -68,11 +70,16 @@ gc dolt-cleanup --probe --json     # orphan dbs / stale procs (NEVER --force wit
 ```
 Disk reclaim after deleting rows is a **dolt** GC: `CALL DOLT_GC('--full')` (online-safe; quiesce writers first). `gc dolt compact` gates on commit count and skips low-commit/high-churn dbs.
 
-## doltlite (SQLite backend)
+## doltlite (embedded backend — linked or plugin)
 
-No server/port/PROCESSLIST. Inspect the file:
+No server/port/PROCESSLIST. First confirm which doltlite deployment (see `gas-stack-map.md` → "Which data plane?"):
 ```bash
-du -sh <store>/.doltlite 2>/dev/null
-sqlite3 <store-file> 'SELECT issue_type, COUNT(*) FROM issues GROUP BY issue_type;'   # adapt to the actual schema/path
+jq -r '.backend, (.backend_plugin_command // "—")' .beads/metadata.json   # doltlite + (plugin cmd | —)
+pgrep -af 'bd-backend-doltlite|gc-doltlite-fastpath'                      # plugin serve procs (plugin model)
+du -sh .beads/doltlite 2>/dev/null                                        # store size on disk
 ```
-The CPU-vs-load, binary-grep, store-layout, and dogfood techniques still apply; the server techniques do not. **Check the backend before reaching for `SHOW PROCESSLIST`.**
+Query **through bd** (routed to the backend — works for linked and plugin), not a raw `sqlite3` open of the `.db` (that bypasses the working-set/commit model and can read a stale or locked view):
+```bash
+bd sql -q "SELECT issue_type, COUNT(*) n, SUM(status='closed') closed FROM issues GROUP BY issue_type ORDER BY n DESC"
+```
+Disk reclaim / maintenance is a **DoltLite** operation, not `CALL DOLT_GC` over a wire — use the DoltLite SQL functions (`SELECT dolt_gc();`, flatten, maintenance) and mind the store locks. The authoritative references for those, the native read fastpath, and DoltLite lock/maintenance gotchas are the DoltLite contract (`dolthub/doltlite` + README) and the plugin repos (`duncan4123/beads-backend-doltlite`, `duncan4123/gascity`); the `beads-doltlite` pack's `doltlite` skill (if your city imports it) collects them. The CPU-vs-load, binary-grep, store-layout, and dogfood techniques still apply; the server techniques (`PROCESSLIST`, `ss` on a port, `DOLT_GC('--full')` over the wire) do not. **Check the backend before reaching for `SHOW PROCESSLIST`.**
